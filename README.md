@@ -13,6 +13,27 @@ The effect of Latent Couple appears only when Enabled is checked.
 ### Divisions, Positions, and Weights
 Regions are created based on these parameters.
 
+Divisions are separated by commas, and the number of divisions is
+denoted in the format `V:H` where `V` and `H` is the number of parts a region is
+divided along the vertical and horizontal axes, respectively.
+
+Example: `1:1,2:2,5:4`
+
+The positions parameter follows a similar format, but the format is `V_start-V_end:H_start-H_end`
+where `V_start-V_end` denotes the range of positions the prompt affects.
+
+The positions are zero-indexed, meaning 0 is the first position, 1 the second, etc. They go from top to bottom and left to right, so `0:0` is the top left corner in a `2:2` division, and `1:1` is the bottom right corner
+
+The end position is *non-inclusive* and can be omitted, so '0:0' is equivalent to `0-1:0-1`, `1:1` is equivalent to `1-2:1-2`, etc.
+
+the positions of different prompts can overlap.
+
+Example: `0:0,1:1,1-4:1-3`
+
+Weights are simply the strength for the region in case it overlaps with other regions. It can be any value from `-1` to `1`
+
+Example: `0.2,0.5,-0.5`
+
 ### end at this step
 The processing of Latent Couple is performed until the specified step is reached.
 
