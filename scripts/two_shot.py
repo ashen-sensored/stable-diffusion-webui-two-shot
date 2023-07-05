@@ -158,7 +158,6 @@ class Script(scripts.Script):
         self.end_at_step: int = 20
         self.filters: List[Filter] = []
         self.debug: bool = False
-        self.mask_denoise = False
         prompt_textbox_tracker.set_script(self)
         self.target_paste_prompt = None
         self.enabled_type = "Disabled"
@@ -235,13 +234,18 @@ class Script(scripts.Script):
 
         return raw_params.get('divisions', '1:1,1:2,1:2'), raw_params.get('positions', '0:0,0:0,0:1'), raw_params.get('weights', '0.2,0.8,0.8'), int(raw_params.get('step', '20'))
 
-    def create_from_image(self, img_arr):
+    def create_from_image(self, img_arr, mask_denoise=False):
             """
             Decompose image array to binary matrixes for each color. 
             :param img_arr: image array
             :return: [area_colors, color_bool_matrix, input_binary_matrixes]
             """
             input_binary_matrixes = []
+            if type(img_arr) is str:
+                # decode base64 image
+                image_data = base64.b64decode(img_arr.split(',')[-1])
+                # convert to numpy array
+                img_arr = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
             im2arr = img_arr
             # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
             #           ['colors']]
@@ -257,7 +261,7 @@ class Script(scripts.Script):
             # TODO:for every non area color pixel in img_arr, find the nearest area color pixel and replace it with that color
 
             area_colors = np.delete(sketch_colors, edge_color_correction_arr, axis=0)
-            if self.mask_denoise:
+            if mask_denoise:
                 for edge_color_idx in edge_color_correction_arr:
                     edge_color = sketch_colors[edge_color_idx]
                     # find the nearest area_color
@@ -296,7 +300,7 @@ class Script(scripts.Script):
         def create_canvas(h, w):
             return np.ones(shape=(h, w, 3), dtype=np.uint8) * 255
 
-        def process_sketch(img_arr, input_binary_matrixes):
+        def process_sketch(img_arr, input_binary_matrixes, mask_denoise=False):
             """
             Process image array to binary matrixes for each color. 
             :param img_arr: image array
@@ -310,6 +314,13 @@ class Script(scripts.Script):
             # base64_img = canvas_data['image']
             # image_data = base64.b64decode(base64_img.split(',')[1])
             # image = Image.open(BytesIO(image_data)).convert("RGB")
+            if type(img_arr) is str:
+                print("Decoding base64 string")
+                # decode base64 image
+                image_data = base64.b64decode(img_arr.split(',')[-1])
+                # convert to numpy array
+                img_arr = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
+                print("Finished decoding")
             im2arr = img_arr
             # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
             #           ['colors']]
@@ -325,7 +336,9 @@ class Script(scripts.Script):
             # TODO:for every non area color pixel in img_arr, find the nearest area color pixel and replace it with that color
 
             area_colors = np.delete(sketch_colors, edge_color_correction_arr, axis=0)
-            if self.mask_denoise:
+            if mask_denoise:
+                if self.debug:
+                    print("Denoising mask")
                 for edge_color_idx in edge_color_correction_arr:
                     edge_color = sketch_colors[edge_color_idx]
                     # find the nearest area_color
@@ -424,13 +437,9 @@ class Script(scripts.Script):
                         #                    value="stabilityai/stable-diffusion-2-1-base",
                         #                    visible=False if is_shared_ui else True)
                         mask_denoise_checkbox = gr.Checkbox(value=False, label="Denoise Mask")
-
-                        def update_mask_denoise_flag(flag):
-                            self.mask_denoise = flag
-
-                        mask_denoise_checkbox.change(fn=update_mask_denoise_flag, inputs=[mask_denoise_checkbox], outputs=None)
                         canvas_image = gr.Image(source='upload', mirror_webcam=False, type='numpy', tool='color-sketch',
                                                 elem_id='twoshot_canvas_sketch', interactive=True, height=480, label="Sketch")
+                        sketch_finish_image = gr.Image(interactive=False, height=480, type="numpy", mirror_webcam=False) # copy to here
                         # aspect = gr.Radio(["square", "horizontal", "vertical"], value="square", label="Aspect Ratio",
                         #                   visible=False if is_shared_ui else True)
                         button_run = gr.Button("I've finished my sketch", elem_id="main_button", interactive=True)
@@ -471,10 +480,11 @@ class Script(scripts.Script):
                         final_filter_list = gr.State([]) # list of MaskFilter objects, dummy list to hold the mask filters
                         area_colors_list = gr.State([]) # list of area colors, dummy list to hold the area colors
 
-                        button_run.click(process_sketch, inputs=[canvas_image, binary_matrixes],
+                        button_run.click(process_sketch, inputs=[canvas_image, binary_matrixes, mask_denoise_checkbox],
                                          #gr.update(visible=True), area_colors, ndmasks, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors
                                          outputs=[post_sketch, area_colors_list, ndmasks, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors],
                                          queue=False)
+                        button_run.click(lambda x:x, inputs = [canvas_image], outputs = [sketch_finish_image])
                         button_update.click(fn=update_mask_filters, inputs=[area_colors_list, ndmasks, alpha_blend, general_prompt, *cur_weight_sliders, *prompts], 
                                             # [final_filter_list, final_prompt_update, alpha_mask_visibility, alpha_mask_html, *sketch_colors]
                                             outputs=[final_filter_list, final_prompt, alpha_mask_row, alpha_color, *colors])
@@ -525,6 +535,7 @@ class Script(scripts.Script):
         process_script_params.extend(cur_weight_sliders)
         # finally add the canvas info
         process_script_params.append(canvas_image)
+        process_script_params.append(mask_denoise_checkbox)
         return process_script_params
 
     def denoised_callback(self, params: CFGDenoisedParams):
@@ -583,9 +594,9 @@ class Script(scripts.Script):
             print("args" ,args)
             print("kwargs", kwargs)
         
-        COUNT_OF_LAST_ARGS = 1
+        COUNT_OF_LAST_ARGS = 2
         
-        canvas_np  = args[-COUNT_OF_LAST_ARGS]
+        canvas_np, mask_denoise  = args[-COUNT_OF_LAST_ARGS:]
         # if base64 image is passed, convert it to numpy array
         if type(canvas_np) is str:
             # decode base64 image
@@ -611,7 +622,7 @@ class Script(scripts.Script):
             if self.debug:
                 print(f"### Latent couple Mask ###")
             # create filters from ui params
-            colors, ndmasks, _ =self.create_from_image(canvas_np)
+            colors, ndmasks, _ =self.create_from_image(canvas_np, mask_denoise)
             self.filters = self.assign_mask_filters(ndmasks, alpha_blend, *cur_weight_sliders)
         elif self.enabled_type == "Rect":
             self.filters = self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)
