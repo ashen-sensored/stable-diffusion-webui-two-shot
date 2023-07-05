@@ -589,7 +589,7 @@ class Script(scripts.Script):
         # if base64 image is passed, convert it to numpy array
         if type(canvas_np) is str:
             # decode base64 image
-            image_data = base64.b64decode(canvas_np.split(',')[0])
+            image_data = base64.b64decode(canvas_np.split(',')[-1])
             # convert to numpy array
             canvas_np = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
         args = args[:-COUNT_OF_LAST_ARGS]
