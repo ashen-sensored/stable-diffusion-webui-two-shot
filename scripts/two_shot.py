@@ -16,6 +16,7 @@ import gradio as gr
 from modules.script_callbacks import CFGDenoisedParams, on_cfg_denoised
 
 from modules.processing import StableDiffusionProcessing
+from modules.ui import gr_show
 
 MAX_COLORS = 12
 switch_values_symbol = '\U000021C5' # ⇅
@@ -40,7 +41,7 @@ from abc import ABC, abstractmethod
 class Filter(ABC):
 
     @abstractmethod
-    def create_tensor(self):
+    def create_tensor(self, num_channels: int, height_b: int, width_b: int) -> torch.Tensor:
         pass
 
 
@@ -155,12 +156,10 @@ class Script(scripts.Script):
         self.end_at_step: int = 20
         self.filters: List[Filter] = []
         self.debug: bool = False
-        self.selected_twoshot_tab = 0
-        self.ndmasks = []
-        self.area_colors = []
         self.mask_denoise = False
         prompt_textbox_tracker.set_script(self)
         self.target_paste_prompt = None
+        self.enabled_type = "Disabled"
 
 
     def title(self):
@@ -169,6 +168,25 @@ class Script(scripts.Script):
     def show(self, is_img2img):
         return scripts.AlwaysVisible
 
+    def assign_mask_filters(self, ndmasks, alpha_blend_val, *cur_weights_and_prompts):
+        """
+        Creates MaskFilter objects from ndmasks, alpha_blend_val, and cur_weights_and_prompts
+        ndmasks is a list of binary masks (for each color)
+        """
+        cur_weight_slider_vals = cur_weights_and_prompts[:MAX_COLORS]
+        general_mask = ndmasks[-1]
+        final_filter_list = []
+        for m in range(len(ndmasks) - 1):
+            cur_float_mask = ndmasks[m].astype(np.float32) * float(cur_weight_slider_vals[m]) * float(1.0-alpha_blend_val)
+            mask_filter = MaskFilter(float_mask=cur_float_mask)
+            final_filter_list.append(mask_filter)
+        # subtract the sum of all masks from the general mask to get the alpha blend mask
+        initial_general_mask = np.ones(shape=general_mask.shape, dtype=np.float32)
+        alpha_blend_mask = initial_general_mask.astype(np.float32) - np.sum([f.mask for f in final_filter_list], axis=0)
+        alpha_blend_filter = MaskFilter(float_mask=alpha_blend_mask)
+        final_filter_list.insert(0, alpha_blend_filter)
+        return final_filter_list
+        
     def create_rect_filters_from_ui_params(self, raw_divisions: str, raw_positions: str, raw_weights: str):
 
         divisions = []
@@ -198,40 +216,8 @@ class Script(scripts.Script):
 
         return [RectFilter(division, position, weight) for division, position, weight in zip(divisions, positions, weights)]
 
-    def create_mask_filters_from_ui_params(self, raw_divisions: str, raw_positions: str, raw_weights: str):
-
-        divisions = []
-        for division in raw_divisions.split(','):
-            y, x = division.split(':')
-            divisions.append(Division(float(y), float(x)))
-
-        def start_and_end_position(raw: str):
-            nums = [float(num) for num in raw.split('-')]
-            if len(nums) == 1:
-                return nums[0], nums[0] + 1.0
-            else:
-                return nums[0], nums[1]
-
-        positions = []
-        for position in raw_positions.split(','):
-            y, x = position.split(':')
-            y1, y2 = start_and_end_position(y)
-            x1, x2 = start_and_end_position(x)
-            positions.append(Position(y1, x1, y2, x2))
-
-        weights = []
-        for w in raw_weights.split(','):
-            weights.append(float(w))
-
-        # todo: assert len
-
-        return [Filter(division, position, weight) for division, position, weight in zip(divisions, positions, weights)]
-
     def do_visualize(self, raw_divisions: str, raw_positions: str, raw_weights: str):
-
-        self.filters = self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)
-
-        return [f.create_tensor(1, 128, 128).squeeze(dim=0).cpu().numpy() for f in self.filters]
+        return [f.create_tensor(1, 128, 128).squeeze(dim=0).cpu().numpy() for f in self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)]
 
     def do_apply(self, extra_generation_params: str):
         #
@@ -247,6 +233,53 @@ class Script(scripts.Script):
 
         return raw_params.get('divisions', '1:1,1:2,1:2'), raw_params.get('positions', '0:0,0:0,0:1'), raw_params.get('weights', '0.2,0.8,0.8'), int(raw_params.get('step', '20'))
 
+    def create_from_image(self, img_arr):
+            """
+            Decompose image array to binary matrixes for each color. 
+            :param img_arr: image array
+            :return: [area_colors, color_bool_matrix, input_binary_matrixes]
+            """
+            input_binary_matrixes = []
+            im2arr = img_arr
+            # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
+            #           ['colors']]
+            sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
+            colors_fixed = []
+            # if color count is less than 0.001 of total pixel count, collect it for edge color correction
+            edge_color_correction_arr = []
+            for sketch_color_idx, color in enumerate(sketch_colors[:-1]):  # exclude white
+                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.002:
+                    edge_color_correction_arr.append(sketch_color_idx)
+
+            edge_fix_dict = {}
+            # TODO:for every non area color pixel in img_arr, find the nearest area color pixel and replace it with that color
+
+            area_colors = np.delete(sketch_colors, edge_color_correction_arr, axis=0)
+            if self.mask_denoise:
+                for edge_color_idx in edge_color_correction_arr:
+                    edge_color = sketch_colors[edge_color_idx]
+                    # find the nearest area_color
+
+                    color_distances = np.linalg.norm(area_colors - edge_color, axis=1)
+                    nearest_index = np.argmin(color_distances)
+                    nearest_color = area_colors[nearest_index]
+                    edge_fix_dict[edge_color_idx] = nearest_color
+                    # replace edge color with the nearest area_color
+                    cur_color_mask = np.all(im2arr == edge_color, axis=2)
+                    im2arr[cur_color_mask] = nearest_color
+
+                # recalculate area colors
+                sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
+                area_colors = sketch_colors
+
+            # create binary matrix for each area_color
+            color_bool_matrix = []
+            for color in area_colors:
+                mask, binary_matrix = create_binary_matrix_base64(im2arr, color)
+                color_bool_matrix.append(mask)
+                input_binary_matrixes.append(binary_matrix)
+            return [area_colors, color_bool_matrix, input_binary_matrixes]
+        
     def ui(self, is_img2img):
         process_script_params = []
         id_part = "img2img" if is_img2img else "txt2img"
@@ -259,9 +292,18 @@ class Script(scripts.Script):
         # """
 
         def create_canvas(h, w):
-            return np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
+            return np.ones(shape=(h, w, 3), dtype=np.uint8) * 255
 
         def process_sketch(img_arr, input_binary_matrixes):
+            """
+            Process image array to binary matrixes for each color. 
+            :param img_arr: image array
+            :param input_binary_matrixes: list-like object of binary matrixes, should be holder for the output
+            
+            :return: [area_colors, color_bool_matrix, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors]
+            """
+            print("process_sketch called")
+            print(f"type of input_binary_matrixes is {type(input_binary_matrixes)} ")
             input_binary_matrixes.clear()
             # base64_img = canvas_data['image']
             # image_data = base64.b64decode(base64_img.split(',')[1])
@@ -300,39 +342,34 @@ class Script(scripts.Script):
 
             # create binary matrix for each area_color
             area_color_maps = []
-            self.ndmasks = []
-            self.area_colors = area_colors
+            ndmasks = []
             for color in area_colors:
                 r, g, b = color
                 mask, binary_matrix = create_binary_matrix_base64(im2arr, color)
-                self.ndmasks.append(mask)
+                ndmasks.append(mask)
                 input_binary_matrixes.append(binary_matrix)
                 colors_fixed.append(gr.update(
                     value=f'<div style="display:flex;justify-content:center;max-height: 94px;"><img width="20%" style="object-fit: contain;flex-grow:1;margin-right: 1em;" src="data:image/png;base64,{binary_matrix}" /><div class="color-bg-item" style="background-color: rgb({r},{g},{b});width:10%;height:auto;"></div></div>'))
-
-
-
             visibilities = []
             sketch_colors = []
-
             for sketch_color_idx in range(MAX_COLORS):
                 visibilities.append(gr.update(visible=False))
                 sketch_colors.append(gr.update(value=f'<div class="color-bg-item" style="background-color: black"></div>'))
             for j in range(len(colors_fixed)-1):
                 visibilities[j] = gr.update(visible=True)
                 sketch_colors[j] = colors_fixed[j]
-
             alpha_mask_visibility = gr.update(visible=True)
             alpha_mask_html = colors_fixed[-1]
-            return [gr.update(visible=True), input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors]
-
-        def update_mask_filters(alpha_blend_val, general_prompt_str, *cur_weights_and_prompts):
+            #post_sketch, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors
+            return [gr.update(visible=True), area_colors, ndmasks, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors]
+        
+        def update_mask_filters(area_colors, ndmasks, alpha_blend_val, general_prompt_str, *cur_weights_and_prompts):
             cur_weight_slider_vals = cur_weights_and_prompts[:MAX_COLORS]
             cur_prompts = cur_weights_and_prompts[MAX_COLORS:]
-            general_mask = self.ndmasks[-1]
+            general_mask = ndmasks[-1]
             final_filter_list = []
-            for m in range(len(self.ndmasks) - 1):
-                cur_float_mask = self.ndmasks[m].astype(np.float32) * float(cur_weight_slider_vals[m]) * float(1.0-alpha_blend_val)
+            for m in range(len(ndmasks) - 1):
+                cur_float_mask = ndmasks[m].astype(np.float32) * float(cur_weight_slider_vals[m]) * float(1.0-alpha_blend_val)
                 mask_filter = MaskFilter(float_mask=cur_float_mask)
                 final_filter_list.append(mask_filter)
             # subtract the sum of all masks from the general mask to get the alpha blend mask
@@ -340,12 +377,10 @@ class Script(scripts.Script):
             alpha_blend_mask = initial_general_mask.astype(np.float32) - np.sum([f.mask for f in final_filter_list], axis=0)
             alpha_blend_filter = MaskFilter(float_mask=alpha_blend_mask)
             final_filter_list.insert(0, alpha_blend_filter)
-            self.filters = final_filter_list
-
-
+            print(f"final_filter_list len is {len(final_filter_list)}")
             sketch_colors = []
             colors_fixed = []
-            for area_idx, color in enumerate(self.area_colors):
+            for area_idx, color in enumerate(area_colors): # TODO no self access
                 r, g, b = color
                 final_list_idx = area_idx + 1
                 if final_list_idx == len(final_filter_list):
@@ -361,7 +396,6 @@ class Script(scripts.Script):
                 colors_fixed.append(gr.update(
                     value=f'<div style="display:flex;justify-content:center;max-height: 94px;"><img width="20%" style="object-fit: contain;flex-grow:1;margin-right: 1em;" src="data:image/png;base64,{adjusted_mask_b64}" /><div class="color-bg-item" style="background-color: rgb({r},{g},{b});width:10%;height:auto;"></div></div>'))
             for sketch_color_idx in range(MAX_COLORS):
-
                 sketch_colors.append(
                     gr.update(value=f'<div class="color-bg-item" style="background-color: black"></div>'))
             for j in range(len(colors_fixed)-1):
@@ -370,20 +404,19 @@ class Script(scripts.Script):
             alpha_mask_visibility = gr.update(visible=True)
             alpha_mask_html = colors_fixed[-1]
             final_prompt_update = gr.update(value='\nAND '.join([general_prompt_str, *cur_prompts[:len(colors_fixed)-1]]))
-            return [final_prompt_update, alpha_mask_visibility, alpha_mask_html, *sketch_colors]
-
-
+            return [final_filter_list, final_prompt_update, alpha_mask_visibility, alpha_mask_html, *sketch_colors]
 
         cur_weight_sliders = []
 
         with gr.Group() as group_two_shot_root:
             binary_matrixes = gr.State([])
             with gr.Accordion("Latent Couple", open=False):
-                enabled = gr.Checkbox(value=False, label="Enabled")
+                
                 with gr.Tabs(elem_id="script_twoshot_tabs") as twoshot_tabs:
-
+                    enabled = gr.Dropdown(value="Disabled", choices=["Disabled", "Mask", "Rect"], label="Latent Couple", elem_id="twoshot_enabled")
+                    end_at_step = gr.Slider(minimum=0, maximum=150, step=1, label="end at this step", elem_id=f"cd_{id_part}_end_at_this_step", value=150)
                     with gr.TabItem("Mask", elem_id="tab_twoshot_mask") as twoshot_tab_mask:
-
+                        
                         canvas_data = gr.JSON(value={}, visible=False)
                         # model = gr.Textbox(label="The id of any Hugging Face model in the diffusers format",
                         #                    value="stabilityai/stable-diffusion-2-1-base",
@@ -395,11 +428,11 @@ class Script(scripts.Script):
 
                         mask_denoise_checkbox.change(fn=update_mask_denoise_flag, inputs=[mask_denoise_checkbox], outputs=None)
                         canvas_image = gr.Image(source='upload', mirror_webcam=False, type='numpy', tool='color-sketch',
-                                                elem_id='twoshot_canvas_sketch', interactive=True).style(height=480)
+                                                elem_id='twoshot_canvas_sketch', interactive=True, height=480)
                         # aspect = gr.Radio(["square", "horizontal", "vertical"], value="square", label="Aspect Ratio",
                         #                   visible=False if is_shared_ui else True)
                         button_run = gr.Button("I've finished my sketch", elem_id="main_button", interactive=True)
-
+                        ndmasks = gr.State([], visible=False) # list of numpy arrays, dummy list to hold the binary masks
                         prompts = []
                         colors = []
                         color_row = [None] * MAX_COLORS
@@ -430,20 +463,20 @@ class Script(scripts.Script):
                                             cur_weight_sliders.append(weight_slider)
 
                             button_update = gr.Button("Prompt Info Update", elem_id="update_button", interactive=True)
+                            button_paste_prompt = gr.Button("Paste Prompt", elem_id="paste_button", interactive=True)
                             final_prompt = gr.Textbox(label="Final Prompt", interactive=False)
+                        
+                        final_filter_list = gr.State([]) # list of MaskFilter objects, dummy list to hold the mask filters
+                        area_colors_list = gr.State([]) # list of area colors, dummy list to hold the area colors
 
                         button_run.click(process_sketch, inputs=[canvas_image, binary_matrixes],
-                                         outputs=[post_sketch, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors],
+                                         #gr.update(visible=True), area_colors, ndmasks, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors
+                                         outputs=[post_sketch, area_colors_list, ndmasks, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors],
                                          queue=False)
-
-                        button_update.click(fn=update_mask_filters, inputs=[alpha_blend, general_prompt, *cur_weight_sliders, *prompts], outputs=[final_prompt, alpha_mask_row, alpha_color, *colors])
-
-                        def paste_prompt(*input_prompts):
-                            final_prompts = input_prompts[:len(self.area_colors)]
-                            final_prompt_str = '\nAND '.join(final_prompts)
-                            return final_prompt_str
-                        source_prompts = [general_prompt, *prompts]
-                        button_update.click(fn=paste_prompt, inputs=source_prompts,
+                        button_update.click(fn=update_mask_filters, inputs=[area_colors_list, ndmasks, alpha_blend, general_prompt, *cur_weight_sliders, *prompts], 
+                                            # [final_filter_list, final_prompt_update, alpha_mask_visibility, alpha_mask_html, *sketch_colors]
+                                            outputs=[final_filter_list, final_prompt, alpha_mask_row, alpha_color, *colors])
+                        button_paste_prompt.click(fn=lambda x:x, inputs=final_prompt,
                                             outputs=self.target_paste_prompt)
 
 
@@ -465,7 +498,6 @@ class Script(scripts.Script):
                             positions = gr.Textbox(label="Positions", elem_id=f"cd_{id_part}_positions", value="0:0,0:0,0:1")
                         with gr.Row():
                             weights = gr.Textbox(label="Weights", elem_id=f"cd_{id_part}_weights", value="0.2,0.8,0.8")
-                            end_at_step = gr.Slider(minimum=0, maximum=150, step=1, label="end at this step", elem_id=f"cd_{id_part}_end_at_this_step", value=150)
 
                         visualize_button = gr.Button(value="Visualize")
                         visual_regions = gr.Gallery(label="Regions").style(grid=(4, 4, 4, 8), height="auto")
@@ -476,16 +508,6 @@ class Script(scripts.Script):
                         apply_button = gr.Button(value="Apply")
 
                         apply_button.click(fn=self.do_apply, inputs=[extra_generation_params], outputs=[divisions, positions, weights, end_at_step])
-
-                    def select_twosoht_tab(tab_id):
-                        self.selected_twoshot_tab = tab_id
-                    for i, elem in enumerate(
-                            [twoshot_tab_mask, twoshot_tab_rect]):
-                        elem.select(
-                            fn=lambda tab=i: select_twosoht_tab(tab),
-                            inputs=[],
-                            outputs=[],
-                    )
 
         self.ui_root = group_two_shot_root
 
@@ -499,11 +521,13 @@ class Script(scripts.Script):
         process_script_params.append(end_at_step)
         process_script_params.append(alpha_blend)
         process_script_params.extend(cur_weight_sliders)
+        # finally add the canvas info
+        process_script_params.append(canvas_image)
         return process_script_params
 
     def denoised_callback(self, params: CFGDenoisedParams):
 
-        if self.enabled and params.sampling_step < self.end_at_step:
+        if self.enabled_type != "Disabled" and params.sampling_step < self.end_at_step:
 
             x = params.x
             # x.shape = [batch_size, C, H // 8, W // 8]
@@ -553,19 +577,34 @@ class Script(scripts.Script):
                 uncond_off += 1
 
     def process(self, p: StableDiffusionProcessing, *args, **kwargs):
-
+        print("args" ,args)
+        print("kwargs", kwargs)
+        
+        COUNT_OF_LAST_ARGS = 1
+        
+        canvas_np  = args[-COUNT_OF_LAST_ARGS]
+        args = args[:-COUNT_OF_LAST_ARGS]
+        
         enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args
 
-        self.enabled = enabled
+        self.enabled_type = enabled # Disabled, Mask, Rect
+        self.enabled = enabled != "Disabled"
 
-        if not self.enabled:
+        if self.enabled_type == "Disabled":
+            # nothing to do
             return
+        elif self.enabled_type == 'Mask': # generate mask
+            pass
 
         self.num_batches = p.batch_size
 
-        if self.selected_twoshot_tab == 0:
-            pass
-        elif self.selected_twoshot_tab == 1:
+        if self.enabled_type == "Mask":
+            if self.debug:
+                print(f"### Latent couple Mask ###")
+            # create filters from ui params
+            colors, ndmasks, _ =self.create_from_image(canvas_np)
+            self.filters = self.assign_mask_filters(ndmasks, alpha_blend, *cur_weight_sliders)
+        elif self.enabled_type == "Rect":
             self.filters = self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)
         else:
             raise ValueError(f"Unknown filter mode")
@@ -588,6 +627,9 @@ class Script(scripts.Script):
         return
 
     def postprocess(self, *args):
+        self.filters = []
+        self.end_at_step = 20
+        self.num_batches = 0
         return
 
 
