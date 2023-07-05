@@ -1,7 +1,9 @@
 import base64
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
-
+import base64
+from io import BytesIO
+from PIL import Image
 import torch
 
 from scripts.sketch_helper import get_high_freq_colors, color_quantization, create_binary_matrix_base64, create_binary_mask
@@ -577,12 +579,19 @@ class Script(scripts.Script):
                 uncond_off += 1
 
     def process(self, p: StableDiffusionProcessing, *args, **kwargs):
-        print("args" ,args)
-        print("kwargs", kwargs)
+        if self.debug:
+            print("args" ,args)
+            print("kwargs", kwargs)
         
         COUNT_OF_LAST_ARGS = 1
         
         canvas_np  = args[-COUNT_OF_LAST_ARGS]
+        # if base64 image is passed, convert it to numpy array
+        if type(canvas_np) is str:
+            # decode base64 image
+            image_data = base64.b64decode(canvas_np.split(',')[0])
+            # convert to numpy array
+            canvas_np = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
         args = args[:-COUNT_OF_LAST_ARGS]
         
         enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args
