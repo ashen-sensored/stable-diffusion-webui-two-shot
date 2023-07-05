@@ -428,7 +428,7 @@ class Script(scripts.Script):
 
                         mask_denoise_checkbox.change(fn=update_mask_denoise_flag, inputs=[mask_denoise_checkbox], outputs=None)
                         canvas_image = gr.Image(source='upload', mirror_webcam=False, type='numpy', tool='color-sketch',
-                                                elem_id='twoshot_canvas_sketch', interactive=True, height=480)
+                                                elem_id='twoshot_canvas_sketch', interactive=True, height=480, label="Sketch")
                         # aspect = gr.Radio(["square", "horizontal", "vertical"], value="square", label="Aspect Ratio",
                         #                   visible=False if is_shared_ui else True)
                         button_run = gr.Button("I've finished my sketch", elem_id="main_button", interactive=True)
@@ -455,7 +455,7 @@ class Script(scripts.Script):
                                             '<div class="color-bg-item" style="background-color: black"></div>'))
                                     with gr.Column():
                                         with gr.Row():
-                                            prompts.append(gr.Textbox(label="Prompt for this mask"))
+                                            prompts.append(gr.Textbox(label=f"Prompt for this mask {n+1}"))
 
                                         with gr.Row():
                                             weight_slider = gr.Slider(label=f"Area {n+1} Weight", minimum=0.0, maximum=1.0,
