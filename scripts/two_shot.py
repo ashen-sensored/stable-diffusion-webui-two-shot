@@ -175,9 +175,9 @@ class Script(scripts.Script):
         ndmasks is a list of binary masks (for each color)
         """
         cur_weight_slider_vals = cur_weights_and_prompts[:MAX_COLORS]
-        general_mask = ndmasks[-1]
+        general_mask = ndmasks[0]
         final_filter_list = []
-        for m in range(len(ndmasks) - 1):
+        for m in range(1,len(ndmasks)):
             cur_float_mask = ndmasks[m].astype(np.float32) * float(cur_weight_slider_vals[m]) * float(1.0-alpha_blend_val)
             mask_filter = MaskFilter(float_mask=cur_float_mask)
             final_filter_list.append(mask_filter)
@@ -233,7 +233,7 @@ class Script(scripts.Script):
             raw_params[pair[0]] = pair[1]
 
         return raw_params.get('divisions', '1:1,1:2,1:2'), raw_params.get('positions', '0:0,0:0,0:1'), raw_params.get('weights', '0.2,0.8,0.8'), int(raw_params.get('step', '20'))
-
+    
     def create_from_image(self, img_arr, mask_denoise=False):
             """
             Decompose image array to binary matrixes for each color. 
@@ -590,7 +590,12 @@ class Script(scripts.Script):
                     tensor_off += 1
 
                 uncond_off += 1
-
+                
+    @lru_cache(maxsize=1)
+    def b64decode(self, base64_img):
+        image_data = base64.b64decode(base64_img.split(',')[-1])
+        return np.array(Image.open(BytesIO(image_data)).convert("RGB"))
+    
     def process(self, p: StableDiffusionProcessing, *args, **kwargs):
         if self.debug:
             print("args" ,args)
@@ -602,12 +607,14 @@ class Script(scripts.Script):
         # if base64 image is passed, convert it to numpy array
         if type(canvas_np) is str:
             # decode base64 image
-            image_data = base64.b64decode(canvas_np.split(',')[-1])
-            # convert to numpy array
-            canvas_np = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
+            canvas_np = self.b64decode(canvas_np)
         args = args[:-COUNT_OF_LAST_ARGS]
         
         enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args
+        if self.debug:
+            print("### Latent couple ###")
+            print(f"process enabled={enabled} raw_divisions={raw_divisions} raw_positions={raw_positions} raw_weights={raw_weights} raw_end_at_step={raw_end_at_step} alpha_blend={alpha_blend} cur_weight_sliders={cur_weight_sliders}")
+            
 
         self.enabled_type = enabled # Disabled, Mask, Rect
         self.enabled = enabled != "Disabled"
@@ -626,8 +633,6 @@ class Script(scripts.Script):
             # create filters from ui params
             colors, ndmasks, _ =self.create_from_image(canvas_np, mask_denoise)
             self.filters = self.assign_mask_filters(ndmasks, alpha_blend, *cur_weight_sliders)
-            # pop 0 to last
-            self.filters = self.filters[1:] + [self.filters[0]]
         elif self.enabled_type == "Rect":
             self.filters = self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)
         else:
