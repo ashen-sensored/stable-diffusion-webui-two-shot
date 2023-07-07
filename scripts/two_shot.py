@@ -9,6 +9,7 @@ import torch
 from scripts.sketch_helper import get_high_freq_colors, color_quantization, create_binary_matrix_base64, create_binary_mask
 import numpy as np
 import cv2
+from functools import lru_cache
 
 from modules import devices, script_callbacks
 
@@ -94,10 +95,9 @@ class MaskFilter:
         else:
             raise ValueError('Either float_mask or binary_mask and weight must be provided')
         self.tensor_mask = torch.tensor(self.mask).to(devices.device)
-
+        
+    @lru_cache(maxsize=20)
     def create_tensor(self, num_channels: int, height_b: int, width_b: int) -> torch.Tensor:
-
-
         # x = torch.zeros(num_channels, height_b, width_b).to(devices.device)
         # mask = torch.tensor(self.mask).to(devices.device)
         # downsample mask to x size
@@ -370,34 +370,37 @@ class Script(scripts.Script):
             for sketch_color_idx in range(MAX_COLORS):
                 visibilities.append(gr.update(visible=False))
                 sketch_colors.append(gr.update(value=f'<div class="color-bg-item" style="background-color: black"></div>'))
-            for j in range(len(colors_fixed)-1):
+            # idx 0 is alpha, update elsewhere
+            for j in range(1, len(colors_fixed)):
                 visibilities[j] = gr.update(visible=True)
                 sketch_colors[j] = colors_fixed[j]
             alpha_mask_visibility = gr.update(visible=True)
-            alpha_mask_html = colors_fixed[-1]
+            alpha_mask_html = colors_fixed[0]
             #post_sketch, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors
             return [gr.update(visible=True), area_colors, ndmasks, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors]
         
         def update_mask_filters(area_colors, ndmasks, alpha_blend_val, general_prompt_str, *cur_weights_and_prompts):
             cur_weight_slider_vals = cur_weights_and_prompts[:MAX_COLORS]
             cur_prompts = cur_weights_and_prompts[MAX_COLORS:]
-            general_mask = ndmasks[-1]
+            general_mask = ndmasks[0] # 0 is alpha mask
             final_filter_list = []
-            for m in range(len(ndmasks) - 1):
+            for m in range(1, len(ndmasks)): # other masks
                 cur_float_mask = ndmasks[m].astype(np.float32) * float(cur_weight_slider_vals[m]) * float(1.0-alpha_blend_val)
                 mask_filter = MaskFilter(float_mask=cur_float_mask)
                 final_filter_list.append(mask_filter)
+            # now final_filter_list contains other masks except alpha mask
             # subtract the sum of all masks from the general mask to get the alpha blend mask
             initial_general_mask = np.ones(shape=general_mask.shape, dtype=np.float32)
             alpha_blend_mask = initial_general_mask.astype(np.float32) - np.sum([f.mask for f in final_filter_list], axis=0)
             alpha_blend_filter = MaskFilter(float_mask=alpha_blend_mask)
             final_filter_list.insert(0, alpha_blend_filter)
+            # now final_filter_list contains all masks, 0 is alpha mask, 1 to len(final_filter_list) are other masks
             print(f"final_filter_list len is {len(final_filter_list)}")
             sketch_colors = []
             colors_fixed = []
             for area_idx, color in enumerate(area_colors): # TODO no self access
                 r, g, b = color
-                final_list_idx = area_idx + 1
+                final_list_idx = area_idx # now it is 0 to len(final_filter_list)
                 if final_list_idx == len(final_filter_list):
                     final_list_idx = 0
                 # get shape of current mask
@@ -413,12 +416,11 @@ class Script(scripts.Script):
             for sketch_color_idx in range(MAX_COLORS):
                 sketch_colors.append(
                     gr.update(value=f'<div class="color-bg-item" style="background-color: black"></div>'))
-            for j in range(len(colors_fixed)-1):
-
+            for j in range(1, len(colors_fixed)): # colors_fixed is [alpha, color1, color2, ...]
                 sketch_colors[j] = colors_fixed[j]
             alpha_mask_visibility = gr.update(visible=True)
-            alpha_mask_html = colors_fixed[-1]
-            final_prompt_update = gr.update(value='\nAND '.join([general_prompt_str, *cur_prompts[:len(colors_fixed)-1]]))
+            alpha_mask_html = colors_fixed[0]
+            final_prompt_update = gr.update(value='\nAND '.join([general_prompt_str, *cur_prompts[1:len(colors_fixed)]]))
             return [final_filter_list, final_prompt_update, alpha_mask_visibility, alpha_mask_html, *sketch_colors]
 
         cur_weight_sliders = []
@@ -624,6 +626,8 @@ class Script(scripts.Script):
             # create filters from ui params
             colors, ndmasks, _ =self.create_from_image(canvas_np, mask_denoise)
             self.filters = self.assign_mask_filters(ndmasks, alpha_blend, *cur_weight_sliders)
+            # pop 0 to last
+            self.filters = self.filters[1:] + [self.filters[0]]
         elif self.enabled_type == "Rect":
             self.filters = self.create_rect_filters_from_ui_params(raw_divisions, raw_positions, raw_weights)
         else:
