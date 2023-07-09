@@ -460,6 +460,7 @@ class Script(scripts.Script):
                         # model = gr.Textbox(label="The id of any Hugging Face model in the diffusers format",
                         #                    value="stabilityai/stable-diffusion-2-1-base",
                         #                    visible=False if is_shared_ui else True)
+                        # default image
                         mask_denoise_checkbox = gr.Checkbox(value=False, label="Denoise Mask")
                         canvas_image = gr.Image(source='upload', mirror_webcam=False, type='numpy', tool='color-sketch',
                                                 elem_id='twoshot_canvas_sketch', interactive=True, height=480, label="Sketch")
@@ -557,9 +558,9 @@ class Script(scripts.Script):
         process_script_params.append(end_at_step)
         process_script_params.append(alpha_blend)
         process_script_params.extend(cur_weight_sliders)
+        process_script_params.append(mask_denoise_checkbox)
         # finally add the canvas info
         process_script_params.append(canvas_image)
-        process_script_params.append(mask_denoise_checkbox)
         return process_script_params
 
     def denoised_callback(self, params: CFGDenoisedParams):
@@ -622,17 +623,28 @@ class Script(scripts.Script):
         if self.debug:
             print("args" ,args)
             print("kwargs", kwargs)
-        
-        COUNT_OF_LAST_ARGS = 2
-        
-        canvas_np, mask_denoise  = args[-COUNT_OF_LAST_ARGS:]
+        # find decodeable args
+        found_idx = -1
+        for i, arg in enumerate(args[::-1]):
+            if type(arg) is str:
+                try:
+                    self.b64decode(arg)
+                    found_idx = i + 1
+                    break
+                except:
+                    pass
+        assert found_idx != -1, f"Could not find base64 image in args"
+        canvas_np = args[-found_idx]
+        mask_denoise = args[-found_idx-1]
+        if type(mask_denoise) != bool:
+            mask_denoise = False
         # if base64 image is passed, convert it to numpy array
         if type(canvas_np) is str:
             # decode base64 image
             canvas_np = self.b64decode(canvas_np)
-        args = args[:-COUNT_OF_LAST_ARGS]
-        
-        enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args
+        assert type(canvas_np) is np.ndarray, f"Expected canvas_np to be np.ndarray, got {type(canvas_np)}"
+        # get 20 first args
+        enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args[:-found_idx-1]
         if self.debug:
             print("### Latent couple ###")
             print(f"process enabled={enabled} raw_divisions={raw_divisions} raw_positions={raw_positions} raw_weights={raw_weights} raw_end_at_step={raw_end_at_step} alpha_blend={alpha_blend} cur_weight_sliders={cur_weight_sliders}")
