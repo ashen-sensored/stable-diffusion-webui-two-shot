@@ -149,7 +149,30 @@ class PastePromptTextboxTracker:
 
 prompt_textbox_tracker = PastePromptTextboxTracker()
 
-
+def preprocess_sketch(img_arr, mask_denoise=False):
+    """
+    Remove colors with low pixel count, create binary matrixes for each color.
+    """
+    if type(img_arr) is str:
+        # decode base64 image
+        image_data = base64.b64decode(img_arr.split(',')[-1])
+        # convert to numpy array
+        img_arr = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
+    elif type(img_arr) is np.ndarray:
+        img_arr = img_arr.copy()
+    elif type(img_arr) is torch.Tensor:
+        img_arr = img_arr.cpu().numpy().copy()
+    im2arr = img_arr
+    sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
+    # just remove colors with low pixel count
+    most_common_color = sketch_colors[np.argmax(color_counts)]
+    # replace all colors with low pixel count with the most common color
+    for sketch_color_idx, color in enumerate(sketch_colors):
+        if color[0] == 255 and color[1] == 255 and color[2] == 255:
+            continue
+        if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
+            im2arr[np.all(im2arr == color, axis=2)] = most_common_color
+    return im2arr
 class Script(scripts.Script):
 
     def __init__(self):
@@ -235,56 +258,55 @@ class Script(scripts.Script):
         return raw_params.get('divisions', '1:1,1:2,1:2'), raw_params.get('positions', '0:0,0:0,0:1'), raw_params.get('weights', '0.2,0.8,0.8'), int(raw_params.get('step', '20'))
     
     def create_from_image(self, img_arr, mask_denoise=False):
-            """
-            Decompose image array to binary matrixes for each color. 
-            :param img_arr: image array
-            :return: [area_colors, color_bool_matrix, input_binary_matrixes]
-            """
-            input_binary_matrixes = []
-            if type(img_arr) is str:
-                # decode base64 image
-                image_data = base64.b64decode(img_arr.split(',')[-1])
-                # convert to numpy array
-                img_arr = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
-            im2arr = img_arr
-            # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
-            #           ['colors']]
+        """
+        Decompose image array to binary matrixes for each color. 
+        :param img_arr: image array
+        :return: [area_colors, color_bool_matrix, input_binary_matrixes]
+        """
+        input_binary_matrixes = []
+        im2arr = preprocess_sketch(img_arr, mask_denoise)
+        # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
+        #           ['colors']]
+        sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
+        colors_fixed = []
+        # if color count is less than 0.001 of total pixel count, collect it for edge color correction
+        edge_color_correction_arr = []
+        for sketch_color_idx, color in enumerate(sketch_colors):  # exclude white
+            if color[0] == 255 and color[1] == 255 and color[2] == 255:
+                continue
+            if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
+                edge_color_correction_arr.append(sketch_color_idx)
+
+        edge_fix_dict = {}
+        # TODO:for every non area color pixel in img_arr, find the nearest area color pixel and replace it with that color
+
+        area_colors = np.delete(sketch_colors, edge_color_correction_arr, axis=0)
+        if mask_denoise:
+            for edge_color_idx in edge_color_correction_arr:
+                edge_color = sketch_colors[edge_color_idx]
+                # find the nearest area_color
+
+                color_distances = np.linalg.norm(area_colors - edge_color, axis=1)
+                nearest_index = np.argmin(color_distances)
+                nearest_color = area_colors[nearest_index]
+                edge_fix_dict[edge_color_idx] = nearest_color
+                # replace edge color with the nearest area_color
+                cur_color_mask = np.all(im2arr == edge_color, axis=2)
+                im2arr[cur_color_mask] = nearest_color
+
+            # recalculate area colors
             sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
-            colors_fixed = []
-            # if color count is less than 0.001 of total pixel count, collect it for edge color correction
-            edge_color_correction_arr = []
-            for sketch_color_idx, color in enumerate(sketch_colors):  # exclude white
-                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
-                    edge_color_correction_arr.append(sketch_color_idx)
+            area_colors = sketch_colors
 
-            edge_fix_dict = {}
-            # TODO:for every non area color pixel in img_arr, find the nearest area color pixel and replace it with that color
-
-            area_colors = np.delete(sketch_colors, edge_color_correction_arr, axis=0)
-            if mask_denoise:
-                for edge_color_idx in edge_color_correction_arr:
-                    edge_color = sketch_colors[edge_color_idx]
-                    # find the nearest area_color
-
-                    color_distances = np.linalg.norm(area_colors - edge_color, axis=1)
-                    nearest_index = np.argmin(color_distances)
-                    nearest_color = area_colors[nearest_index]
-                    edge_fix_dict[edge_color_idx] = nearest_color
-                    # replace edge color with the nearest area_color
-                    cur_color_mask = np.all(im2arr == edge_color, axis=2)
-                    im2arr[cur_color_mask] = nearest_color
-
-                # recalculate area colors
-                sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
-                area_colors = sketch_colors
-
-            # create binary matrix for each area_color
-            color_bool_matrix = []
-            for color in area_colors:
-                mask, binary_matrix = create_binary_matrix_base64(im2arr, color)
-                color_bool_matrix.append(mask)
-                input_binary_matrixes.append(binary_matrix)
-            return [area_colors, color_bool_matrix, input_binary_matrixes]
+        # create binary matrix for each area_color
+        color_bool_matrix = []
+        for color in area_colors:
+            mask, binary_matrix = create_binary_matrix_base64(im2arr, color)
+            color_bool_matrix.append(mask)
+            input_binary_matrixes.append(binary_matrix)
+        if self.debug:
+            print(f"Created {len(area_colors)} area colors")
+        return [area_colors, color_bool_matrix, input_binary_matrixes]
         
     def ui(self, is_img2img):
         process_script_params = []
@@ -299,6 +321,7 @@ class Script(scripts.Script):
 
         def create_canvas(h, w):
             return np.ones(shape=(h, w, 3), dtype=np.uint8) * 255
+            
 
         def process_sketch(img_arr, input_binary_matrixes, mask_denoise=False):
             """
@@ -314,13 +337,7 @@ class Script(scripts.Script):
             # base64_img = canvas_data['image']
             # image_data = base64.b64decode(base64_img.split(',')[1])
             # image = Image.open(BytesIO(image_data)).convert("RGB")
-            if type(img_arr) is str:
-                print("Decoding base64 string")
-                # decode base64 image
-                image_data = base64.b64decode(img_arr.split(',')[-1])
-                # convert to numpy array
-                img_arr = np.array(Image.open(BytesIO(image_data)).convert("RGB"))
-                print("Finished decoding")
+            img_arr = preprocess_sketch(img_arr, mask_denoise)
             im2arr = img_arr
             # colors = [tuple(map(int, rgb[4:-1].split(','))) for rgb in
             #           ['colors']]
@@ -329,6 +346,9 @@ class Script(scripts.Script):
             # if color count is less than 0.001 of total pixel count, collect it for edge color correction
             edge_color_correction_arr = []
             for sketch_color_idx, color in enumerate(sketch_colors):  # exclude white
+                # check if color is white
+                if color[0] == 255 and color[1] == 255 and color[2] == 255:
+                    continue
                 if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
                     edge_color_correction_arr.append(sketch_color_idx)
 
@@ -376,6 +396,8 @@ class Script(scripts.Script):
                 sketch_colors[j] = colors_fixed[j]
             alpha_mask_visibility = gr.update(visible=True)
             alpha_mask_html = colors_fixed[0]
+            if self.debug:
+                print(f"Created {len(colors_fixed)} area colors")
             #post_sketch, binary_matrixes, alpha_mask_row, alpha_color, *color_row, *colors
             return [gr.update(visible=True), area_colors, ndmasks, input_binary_matrixes, alpha_mask_visibility, alpha_mask_html, *visibilities, *sketch_colors]
         
