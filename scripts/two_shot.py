@@ -253,8 +253,8 @@ class Script(scripts.Script):
             colors_fixed = []
             # if color count is less than 0.001 of total pixel count, collect it for edge color correction
             edge_color_correction_arr = []
-            for sketch_color_idx, color in enumerate(sketch_colors[:-1]):  # exclude white
-                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.002:
+            for sketch_color_idx, color in enumerate(sketch_colors):  # exclude white
+                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
                     edge_color_correction_arr.append(sketch_color_idx)
 
             edge_fix_dict = {}
@@ -328,8 +328,8 @@ class Script(scripts.Script):
             colors_fixed = []
             # if color count is less than 0.001 of total pixel count, collect it for edge color correction
             edge_color_correction_arr = []
-            for sketch_color_idx, color in enumerate(sketch_colors[:-1]):  # exclude white
-                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.002:
+            for sketch_color_idx, color in enumerate(sketch_colors):  # exclude white
+                if color_counts[sketch_color_idx] < im2arr.shape[0] * im2arr.shape[1] * 0.004:
                     edge_color_correction_arr.append(sketch_color_idx)
 
             edge_fix_dict = {}
