@@ -623,6 +623,8 @@ class Script(scripts.Script):
         if self.debug:
             print("args" ,args)
             print("kwargs", kwargs)
+        if args[0] == 'Disabled':
+            return
         # find decodeable args
         found_idx = -1
         for i, arg in enumerate(args[::-1]):
@@ -633,6 +635,9 @@ class Script(scripts.Script):
                     break
                 except:
                     pass
+            elif type(arg) is np.ndarray:
+                found_idx = i + 1
+                break
         assert found_idx != -1, f"Could not find base64 image in args"
         canvas_np = args[-found_idx]
         mask_denoise = args[-found_idx-1]
@@ -693,6 +698,8 @@ class Script(scripts.Script):
         self.filters = []
         self.end_at_step = 20
         self.num_batches = 0
+        self.enabled_type = "Disabled"
+        self.enabled = False
         return
 
 
