@@ -395,7 +395,7 @@ class Script(scripts.Script):
 
                         mask_denoise_checkbox.change(fn=update_mask_denoise_flag, inputs=[mask_denoise_checkbox], outputs=None)
                         canvas_image = gr.Image(source='upload', mirror_webcam=False, type='numpy', tool='color-sketch',
-                                                elem_id='twoshot_canvas_sketch', interactive=True).style(height=480)
+                                                elem_id='twoshot_canvas_sketch', interactive=True, height=480)
                         # aspect = gr.Radio(["square", "horizontal", "vertical"], value="square", label="Aspect Ratio",
                         #                   visible=False if is_shared_ui else True)
                         button_run = gr.Button("I've finished my sketch", elem_id="main_button", interactive=True)
@@ -468,7 +468,7 @@ class Script(scripts.Script):
                             end_at_step = gr.Slider(minimum=0, maximum=150, step=1, label="end at this step", elem_id=f"cd_{id_part}_end_at_this_step", value=150)
 
                         visualize_button = gr.Button(value="Visualize")
-                        visual_regions = gr.Gallery(label="Regions").style(grid=(4, 4, 4, 8), height="auto")
+                        visual_regions = gr.Gallery(label="Regions", columns=(4, 4, 4, 8), height="auto")
 
                         visualize_button.click(fn=self.do_visualize, inputs=[divisions, positions, weights], outputs=[visual_regions])
 
