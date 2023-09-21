@@ -162,6 +162,12 @@ def preprocess_sketch(img_arr, mask_denoise=False):
         img_arr = img_arr.copy()
     elif type(img_arr) is torch.Tensor:
         img_arr = img_arr.cpu().numpy().copy()
+    # accept up to max width/height 720
+    if img_arr.shape[0] > 720 or img_arr.shape[1] > 720:
+        print("Image was too big, resizing")
+        bigger_dim = np.argmax(img_arr.shape)
+        scale_factor = 720 / img_arr.shape[bigger_dim]
+        img_arr = cv2.resize(img_arr, (int(img_arr.shape[1] * scale_factor), int(img_arr.shape[0] * scale_factor)))
     im2arr = img_arr
     sketch_colors, color_counts = np.unique(im2arr.reshape(-1, im2arr.shape[2]), axis=0, return_counts=True)
     # just remove colors with low pixel count
