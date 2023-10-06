@@ -644,7 +644,9 @@ class Script(scripts.Script):
             elif type(arg) is np.ndarray:
                 found_idx = i + 1
                 break
-        assert found_idx != -1, f"Could not find base64 image in args"
+            
+        #if mode is Mask, then found_idx should not be -1
+        assert args[0] != 'Mask' or found_idx != -1, f"Expected to find canvas_np or base64 image in args when Mask mode is used, got {args}"
         canvas_np = args[-found_idx]
         mask_denoise = args[-found_idx-1]
         if type(mask_denoise) != bool:
