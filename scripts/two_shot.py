@@ -652,16 +652,18 @@ class Script(scripts.Script):
         if type(mask_denoise) != bool:
             mask_denoise = False
         # if base64 image is passed, convert it to numpy array
-        if type(canvas_np) is str:
+        if args[0] == 'Mask' and type(canvas_np) is str:
             # decode base64 image
             canvas_np = self.b64decode(canvas_np)
-        assert type(canvas_np) is np.ndarray, f"Expected canvas_np to be np.ndarray, got {type(canvas_np)}"
-        # get 20 first args
-        enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args[:-found_idx-1]
+            assert type(canvas_np) is np.ndarray, f"Expected canvas_np to be np.ndarray, got {type(canvas_np)}"
+        else:
+            canvas_np = None #not used
+        # get the index of the last arg before canvas_np, if found_idx is -1, the exclude last arg
+        args_until = -found_idx-1 if found_idx != -1 else -1 # -1 means exclude last arg
+        enabled, raw_divisions, raw_positions, raw_weights, raw_end_at_step, alpha_blend, *cur_weight_sliders = args[:args_until]
         if self.debug:
             print("### Latent couple ###")
             print(f"process enabled={enabled} raw_divisions={raw_divisions} raw_positions={raw_positions} raw_weights={raw_weights} raw_end_at_step={raw_end_at_step} alpha_blend={alpha_blend} cur_weight_sliders={cur_weight_sliders}")
-            
 
         self.enabled_type = enabled # Disabled, Mask, Rect
         self.enabled = enabled != "Disabled"
