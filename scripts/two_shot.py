@@ -233,7 +233,7 @@ class Script(scripts.Script):
 
         return [f.create_tensor(1, 128, 128).squeeze(dim=0).cpu().numpy() for f in self.filters]
 
-    def do_apply(self, extra_generation_params: str):
+    def do_apply(self, extra_generation_params: str, divisions: str, positions: str, weights: str, end_at_step: int) -> Tuple[str, str, str, int]:
         #
         # parse "Latent Couple" extra_generation_params
         #
@@ -245,7 +245,12 @@ class Script(scripts.Script):
                 continue
             raw_params[pair[0]] = pair[1]
 
-        return raw_params.get('divisions', '1:1,1:2,1:2'), raw_params.get('positions', '0:0,0:0,0:1'), raw_params.get('weights', '0.2,0.8,0.8'), int(raw_params.get('step', '20'))
+        step = raw_params.get('step')
+        if step is None:
+            step = end_at_step
+        else:
+            step = int(step)
+        return raw_params.get('divisions', divisions), raw_params.get('positions', positions), raw_params.get('weights', weights), step
 
     def ui(self, is_img2img):
         process_script_params = []
@@ -475,7 +480,7 @@ class Script(scripts.Script):
                         extra_generation_params = gr.Textbox(label="Extra generation params")
                         apply_button = gr.Button(value="Apply")
 
-                        apply_button.click(fn=self.do_apply, inputs=[extra_generation_params], outputs=[divisions, positions, weights, end_at_step])
+                        apply_button.click(fn=self.do_apply, inputs=[extra_generation_params, divisions, positions, weights, end_at_step], outputs=[divisions, positions, weights, end_at_step])
 
                     def select_twosoht_tab(tab_id):
                         self.selected_twoshot_tab = tab_id
